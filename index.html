@@ -501,6 +501,16 @@
       margin-top: 16px;
       flex-shrink: 0;
     }
+    .completion-quote {
+      font-size: 14px;
+      font-weight: 400;
+      color: var(--muted);
+      text-align: center;
+      margin-top: 10px;
+      line-height: 1.55;
+      flex-shrink: 0;
+      padding: 0 8px;
+    }
 
     /* ── Scrollbar hide ── */
     .screen::-webkit-scrollbar { display: none; }
@@ -661,6 +671,7 @@
     <div class="token-badge">Token <span id="token-number">1</span> placed</div>
     <div id="wall-grid"></div>
     <p class="completion-copy">You showed up.</p>
+    <p class="completion-quote" id="completion-quote"></p>
     <div class="spacer"></div>
     <div class="btn-row">
       <button class="btn btn-secondary" id="btn-done">Done</button>
@@ -722,6 +733,34 @@ const GROUNDING_STEPS = [
   'Name 3 things you can hear.',
   'Name 2 things you can smell.',
   'Name 1 thing you can taste.',
+];
+
+const COMPLETION_QUOTES = [
+  'You did the thing you almost didn\'t do.',
+  'Showing up is the work.',
+  'Small and steady builds anything.',
+  'You are not the same person you were.',
+  'Today counts.',
+  'The hard part was starting. You started.',
+  'Progress lives in the quiet moments.',
+  'Nobody sees this but you. That is enough.',
+  'You chose yourself today.',
+  'Rest is not the same as giving up.',
+  'One honest moment at a time.',
+  'You are building something real.',
+  'This is what courage looks like from the inside.',
+  'You showed up when it was hard. That matters.',
+  'The wall grows one token at a time. So do you.',
+  'You are further along than you think.',
+  'This moment is proof you are still trying.',
+  'Healing is not linear. Today still counts.',
+  'You did not quit. That is the whole story.',
+  'Somewhere someone is proud of you for this.',
+  'The version of you from last year would be amazed.',
+  'Hard days are part of the build, not a break from it.',
+  'You are allowed to be a work in progress.',
+  'Every time you show up you change the odds.',
+  'Quiet victories are still victories.',
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -835,6 +874,8 @@ function renderWall(highlightLast) {
 function renderCompletionScreen() {
   document.getElementById('token-number').textContent = state.tokens;
   renderWall(true);
+  const quote = COMPLETION_QUOTES[Math.floor(Math.random() * COMPLETION_QUOTES.length)];
+  document.getElementById('completion-quote').textContent = quote;
 }
 
 // ─────────────────────────────────────────────────────────────
