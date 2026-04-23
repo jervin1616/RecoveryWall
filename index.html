@@ -498,6 +498,49 @@
       flex-shrink: 0;
     }
 
+    /* ── Breathing guide ── */
+    .breath-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      margin-top: 28px;
+      flex-shrink: 0;
+    }
+    .breath-ring {
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      border: 3px solid var(--teal);
+      background: transparent;
+      box-shadow: 0 0 10px rgba(46,196,182,0.28), 0 0 22px rgba(46,196,182,0.12);
+      transform: scale(1);
+      /* transition duration matches the 4s phase exactly */
+      transition: transform 4s ease-in-out, box-shadow 4s ease-in-out;
+      flex-shrink: 0;
+    }
+    .breath-ring.expanded {
+      transform: scale(1.833); /* 110px / 60px */
+      box-shadow: 0 0 20px rgba(46,196,182,0.55), 0 0 42px rgba(46,196,182,0.25);
+    }
+    .breath-text {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--white);
+      text-align: center;
+      transition: opacity 0.5s ease;
+      flex-shrink: 0;
+      /* Reserve height so layout doesn't shift on text change */
+      min-height: 22px;
+    }
+    .breath-counter {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+      flex-shrink: 0;
+      letter-spacing: 0.02em;
+    }
+
     /* ── Token count badge ── */
     .token-badge {
       font-size: 13px;
@@ -669,6 +712,13 @@
   <div class="screen" id="screen-pulled">
     <div class="rtt-logo" style="margin-top: 48px;">RTT</div>
     <p class="urge-head">This feeling will pass.<br>Ride it out.</p>
+
+    <div class="breath-wrap">
+      <div class="breath-ring" id="breath-ring"></div>
+      <p class="breath-text" id="breath-text">Breathe in</p>
+      <p class="breath-counter" id="breath-counter">Breath 1 of 5</p>
+    </div>
+
     <div class="wave-container" id="wave-container">
       <svg class="wave-svg" viewBox="0 0 320 160" id="wave-svg" aria-hidden="true">
         <circle class="wave-touch-ring" id="wave-touch-ring" cx="-100" cy="80" r="22" opacity="0"/>
@@ -959,46 +1009,91 @@ function setGroundingStep(step) {
 // Wave (Urge Surfing) — interactive, JS RAF, cross-browser
 // ─────────────────────────────────────────────────────────────
 function restartWave() {
-  if (state.waveRaf)    cancelAnimationFrame(state.waveRaf);
-  if (state.waveHandle) clearTimeout(state.waveHandle);
+  if (state.waveRaf)     cancelAnimationFrame(state.waveRaf);
+  if (state.waveHandle)  clearTimeout(state.waveHandle);
   if (state.waveCleanup) { state.waveCleanup(); state.waveCleanup = null; }
 
-  const DURATION    = 90000;
-  const SPRING_K    = 0.14;   // spring return speed
-  const INFLUENCE_R = 140;    // px in SVG coords; how far touch pulls nearby control pts
-  const MAX_DEFORM  = 65;     // clamp deformation
-  const CP_X        = [40, 120, 200, 280]; // control point x positions
+  // ── Box breathing: 4s in / 4s hold / 4s out / 4s hold = 16s cycle, 5 cycles = 80s
+  const CYCLES      = 5;
+  const PHASE_MS    = 4000;
+  const CYCLE_MS    = PHASE_MS * 4;          // 16 000ms
+  const TOTAL_MS    = CYCLES * CYCLE_MS;     // 80 000ms
 
-  const start   = performance.now();
-  const pathEl  = document.getElementById('wave-path');
-  const stillEl = document.getElementById('still-here-text');
-  const dotEl   = document.getElementById('wave-touch-dot');
-  const ringEl  = document.getElementById('wave-touch-ring');
-  const hintEl  = document.getElementById('wave-hint');
-  const svgEl   = document.getElementById('wave-svg');
-  const container = document.getElementById('wave-container');
+  const WAVE_MAX    = 52;
+  const WAVE_MIN    = 4;
+  const SPRING_K    = 0.14;
+  const INFLUENCE_R = 140;
+  const MAX_DEFORM  = 65;
+  const CP_X        = [40, 120, 200, 280];
+
+  // DOM refs
+  const pathEl      = document.getElementById('wave-path');
+  const stillEl     = document.getElementById('still-here-text');
+  const dotEl       = document.getElementById('wave-touch-dot');
+  const svgRingEl   = document.getElementById('wave-touch-ring');
+  const hintEl      = document.getElementById('wave-hint');
+  const svgEl       = document.getElementById('wave-svg');
+  const container   = document.getElementById('wave-container');
+  const breathRing  = document.getElementById('breath-ring');
+  const breathText  = document.getElementById('breath-text');
+  const breathCount = document.getElementById('breath-counter');
+
+  // Reset breathing ring instantly (no transition flash on re-entry)
+  breathRing.style.transition = 'none';
+  breathRing.classList.remove('expanded');
+  breathRing.offsetWidth; // force reflow
+  breathRing.style.transition = '';
 
   stillEl.style.opacity = '0';
   if (hintEl) hintEl.style.opacity = '0.7';
+  breathText.textContent    = 'Breathe in';
+  breathText.style.opacity  = '1';
+  breathCount.textContent   = 'Breath 1 of ' + CYCLES;
 
-  // Spring deformation offsets per control point
+  // Touch / spring state
   const deform = [0, 0, 0, 0];
   const touch  = { active: false, svgX: 160, svgY: 80 };
   let hintDismissed = false;
+  let prevPhase     = -1;
+  let prevCycle     = 0;
 
+  // ── Phase helpers ──────────────────────────────────────────
+  // Returns 0=in 1=holdFull 2=out 3=holdEmpty  from cycleT in [0,1)
+  function getPhase(ct) {
+    if (ct < 0.25) return 0;
+    if (ct < 0.5)  return 1;
+    if (ct < 0.75) return 2;
+    return 3;
+  }
+
+  // Wave amplitude matched to breathing phase (smoothstep for natural feel)
+  function breathAmp(ct) {
+    function smooth(t) { return t * t * (3 - 2 * t); }
+    if (ct < 0.25) return WAVE_MIN + (WAVE_MAX - WAVE_MIN) * smooth(ct / 0.25);
+    if (ct < 0.5)  return WAVE_MAX;
+    if (ct < 0.75) return WAVE_MAX - (WAVE_MAX - WAVE_MIN) * smooth((ct - 0.5) / 0.25);
+    return WAVE_MIN;
+  }
+
+  function buildPath(amp) {
+    return (
+      'M0,80 '        +
+      'Q40,'  + (80 - amp + deform[0]) + ' 80,80 '  +
+      'Q120,' + (80 + amp + deform[1]) + ' 160,80 ' +
+      'Q200,' + (80 - amp + deform[2]) + ' 240,80 ' +
+      'Q280,' + (80 + amp + deform[3]) + ' 320,80'
+    );
+  }
+
+  // ── Touch interaction ──────────────────────────────────────
   function toSVG(clientX, clientY) {
-    const rect = svgEl.getBoundingClientRect();
-    return {
-      x: (clientX - rect.left) / rect.width  * 320,
-      y: (clientY - rect.top)  / rect.height * 160,
-    };
+    const r = svgEl.getBoundingClientRect();
+    return { x: (clientX - r.left) / r.width * 320,
+             y: (clientY - r.top)  / r.height * 160 };
   }
 
   function dismissHint() {
-    if (!hintDismissed && hintEl) {
-      hintEl.style.opacity = '0';
-      hintDismissed = true;
-    }
+    if (!hintDismissed && hintEl) { hintEl.style.opacity = '0'; hintDismissed = true; }
   }
 
   function onDown(e) {
@@ -1007,12 +1102,8 @@ function restartWave() {
     const src = e.touches ? e.touches[0] : e;
     const pt  = toSVG(src.clientX, src.clientY);
     touch.svgX = pt.x; touch.svgY = pt.y;
-    dotEl.setAttribute('cx', pt.x);
-    dotEl.setAttribute('cy', pt.y);
-    dotEl.setAttribute('opacity', '0.9');
-    ringEl.setAttribute('cx', pt.x);
-    ringEl.setAttribute('cy', pt.y);
-    ringEl.setAttribute('opacity', '0.35');
+    dotEl.setAttribute('cx', pt.x);    dotEl.setAttribute('cy', pt.y);    dotEl.setAttribute('opacity', '0.9');
+    svgRingEl.setAttribute('cx', pt.x); svgRingEl.setAttribute('cy', pt.y); svgRingEl.setAttribute('opacity', '0.35');
     dismissHint();
   }
 
@@ -1022,16 +1113,14 @@ function restartWave() {
     const src = e.touches ? e.touches[0] : e;
     const pt  = toSVG(src.clientX, src.clientY);
     touch.svgX = pt.x; touch.svgY = pt.y;
-    dotEl.setAttribute('cx', pt.x);
-    dotEl.setAttribute('cy', pt.y);
-    ringEl.setAttribute('cx', pt.x);
-    ringEl.setAttribute('cy', pt.y);
+    dotEl.setAttribute('cx', pt.x);     dotEl.setAttribute('cy', pt.y);
+    svgRingEl.setAttribute('cx', pt.x); svgRingEl.setAttribute('cy', pt.y);
   }
 
-  function onUp(e) {
+  function onUp() {
     touch.active = false;
     dotEl.setAttribute('opacity', '0');
-    ringEl.setAttribute('opacity', '0');
+    svgRingEl.setAttribute('opacity', '0');
   }
 
   container.addEventListener('mousedown',   onDown);
@@ -1054,40 +1143,53 @@ function restartWave() {
     container.removeEventListener('touchcancel', onUp);
   };
 
-  function amplitude(t) {
-    const peak = 55;
-    return t < 0.5
-      ? peak * (t / 0.5)
-      : peak * (1 - (t - 0.5) / 0.5);
-  }
-
-  function buildPath(amp) {
-    // Control points alternate above/below center; deform[] adds touch offset
-    const y0 = 80 - amp + deform[0];
-    const y1 = 80 + amp + deform[1];
-    const y2 = 80 - amp + deform[2];
-    const y3 = 80 + amp + deform[3];
-    return (
-      'M0,80 '          +
-      'Q40,'  + y0 + ' 80,80 '   +
-      'Q120,' + y1 + ' 160,80 '  +
-      'Q200,' + y2 + ' 240,80 '  +
-      'Q280,' + y3 + ' 320,80'
-    );
-  }
+  // ── RAF tick ───────────────────────────────────────────────
+  const BREATH_LABELS   = ['Breathe in', 'Hold', 'Breathe out', 'Hold'];
+  const BREATH_OPACITIES = ['1', '0.6', '1', '0.6'];
+  const start = performance.now();
 
   function tick(now) {
     const elapsed = now - start;
-    const t       = Math.min(elapsed / DURATION, 1);
-    const amp     = amplitude(t);
 
-    // Spring physics: each control point springs toward touch influence or 0
+    // 5 breath cycles done → advance to completion
+    if (elapsed >= TOTAL_MS) {
+      if (state.waveCleanup) { state.waveCleanup(); state.waveCleanup = null; }
+      completeActivity();
+      return;
+    }
+
+    const cyclePos = elapsed % CYCLE_MS;
+    const cycleT   = cyclePos / CYCLE_MS;                     // 0–1 within cycle
+    const cycleNum = Math.floor(elapsed / CYCLE_MS) + 1;      // 1–5
+
+    // ── Breathing UI: update only on phase change ──
+    const phase = getPhase(cycleT);
+    if (phase !== prevPhase) {
+      prevPhase = phase;
+      breathText.textContent   = BREATH_LABELS[phase];
+      breathText.style.opacity = BREATH_OPACITIES[phase];
+      // CSS 4s ease-in-out transition handles the actual ring motion
+      if (phase === 0) breathRing.classList.add('expanded');
+      if (phase === 2) breathRing.classList.remove('expanded');
+    }
+
+    if (cycleNum !== prevCycle) {
+      prevCycle = cycleNum;
+      breathCount.textContent = 'Breath ' + cycleNum + ' of ' + CYCLES;
+    }
+
+    // "Still here." during full-hold phase
+    stillEl.style.opacity = phase === 1 ? '1' : '0';
+
+    // ── Wave amplitude tracks breath ──
+    const amp = breathAmp(cycleT);
+
+    // ── Spring touch deformation ──
     CP_X.forEach(function(cx, i) {
       var target = 0;
       if (touch.active) {
         var dist      = Math.abs(touch.svgX - cx);
         var influence = Math.max(0, 1 - dist / INFLUENCE_R);
-        // (svgY - 80): above center → negative → pulls wave up; below → pulls down
         target = (touch.svgY - 80) * influence * 1.5;
       }
       deform[i] += (target - deform[i]) * SPRING_K;
@@ -1095,26 +1197,19 @@ function restartWave() {
     });
 
     pathEl.setAttribute('d', buildPath(amp));
-
-    // Stroke brightens while touching
     pathEl.setAttribute('stroke', touch.active ? '#60DDD6' : '#2EC4B6');
 
-    // "Still here." fades in at peak
-    const inPeak = t > 0.3 && t < 0.7;
-    stillEl.style.opacity = inPeak ? '1' : '0';
-
-    if (t < 1) {
-      state.waveRaf = requestAnimationFrame(tick);
-    }
+    state.waveRaf = requestAnimationFrame(tick);
   }
 
   state.waveRaf = requestAnimationFrame(tick);
 
+  // Fallback safety net
   state.waveHandle = setTimeout(function() {
-    if (state.waveRaf)    cancelAnimationFrame(state.waveRaf);
+    if (state.waveRaf)     cancelAnimationFrame(state.waveRaf);
     if (state.waveCleanup) { state.waveCleanup(); state.waveCleanup = null; }
     completeActivity();
-  }, DURATION);
+  }, TOTAL_MS + 2000);
 }
 
 // ─────────────────────────────────────────────────────────────
