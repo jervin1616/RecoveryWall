@@ -299,6 +299,10 @@
       justify-content: center;
       position: relative;
       min-height: 220px;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      cursor: crosshair;
     }
     .wave-svg {
       width: 100%;
@@ -311,6 +315,21 @@
       stroke: var(--teal);
       stroke-width: 2.5;
       stroke-linecap: round;
+      transition: stroke 0.2s;
+    }
+    .wave-touch-dot {
+      fill: none;
+      stroke: var(--teal);
+      stroke-width: 1.5;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+    .wave-touch-ring {
+      fill: none;
+      stroke: var(--teal);
+      stroke-width: 0.8;
+      pointer-events: none;
+      opacity: 0.3;
     }
     .still-here {
       font-size: 15px;
@@ -320,6 +339,15 @@
       margin-top: 20px;
       opacity: 0;
       transition: opacity 1.5s ease;
+    }
+    .wave-hint {
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      margin-top: 8px;
+      opacity: 0.7;
+      transition: opacity 0.6s ease;
+      pointer-events: none;
     }
 
     /* ── Completion wall ── */
@@ -613,11 +641,14 @@
   <div class="screen" id="screen-pulled">
     <div class="rtt-logo" style="margin-top: 48px;">RTT</div>
     <p class="urge-head">This feeling will pass.<br>Ride it out.</p>
-    <div class="wave-container">
+    <div class="wave-container" id="wave-container">
       <svg class="wave-svg" viewBox="0 0 320 160" id="wave-svg" aria-hidden="true">
+        <circle class="wave-touch-ring" id="wave-touch-ring" cx="-100" cy="80" r="22" opacity="0"/>
+        <circle class="wave-touch-dot"  id="wave-touch-dot"  cx="-100" cy="80" r="7"  opacity="0"/>
         <path class="wave-path" id="wave-path" d="M0,80 Q40,80 80,80 Q120,80 160,80 Q200,80 240,80 Q280,80 320,80"/>
       </svg>
       <p class="still-here" id="still-here-text">Still here.</p>
+      <p class="wave-hint" id="wave-hint">Touch to surf</p>
     </div>
     <div class="spacer"></div>
   </div>
@@ -681,6 +712,7 @@ const state = {
   timerHandle:     null,
   waveHandle:      null,
   waveRaf:         null,
+  waveCleanup:     null,
   landingTimer:    null,
 };
 
@@ -765,9 +797,10 @@ function startTimerBar(barEl, seconds, onComplete) {
 }
 
 function clearTimers() {
-  if (state.timerHandle) { clearTimeout(state.timerHandle);         state.timerHandle = null; }
-  if (state.waveHandle)  { clearTimeout(state.waveHandle);          state.waveHandle  = null; }
-  if (state.waveRaf)     { cancelAnimationFrame(state.waveRaf);     state.waveRaf     = null; }
+  if (state.timerHandle)  { clearTimeout(state.timerHandle);     state.timerHandle  = null; }
+  if (state.waveHandle)   { clearTimeout(state.waveHandle);      state.waveHandle   = null; }
+  if (state.waveRaf)      { cancelAnimationFrame(state.waveRaf); state.waveRaf      = null; }
+  if (state.waveCleanup)  { state.waveCleanup();                 state.waveCleanup  = null; }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -825,44 +858,150 @@ function setGroundingStep(step) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Wave (Urge Surfing) — JS requestAnimationFrame, cross-browser
+// Wave (Urge Surfing) — interactive, JS RAF, cross-browser
 // ─────────────────────────────────────────────────────────────
 function restartWave() {
-  if (state.waveRaf) cancelAnimationFrame(state.waveRaf);
+  if (state.waveRaf)    cancelAnimationFrame(state.waveRaf);
   if (state.waveHandle) clearTimeout(state.waveHandle);
+  if (state.waveCleanup) { state.waveCleanup(); state.waveCleanup = null; }
 
-  const DURATION = 90000; // ms
-  const start = performance.now();
-  const pathEl = document.getElementById('wave-path');
+  const DURATION    = 90000;
+  const SPRING_K    = 0.14;   // spring return speed
+  const INFLUENCE_R = 140;    // px in SVG coords; how far touch pulls nearby control pts
+  const MAX_DEFORM  = 65;     // clamp deformation
+  const CP_X        = [40, 120, 200, 280]; // control point x positions
+
+  const start   = performance.now();
+  const pathEl  = document.getElementById('wave-path');
   const stillEl = document.getElementById('still-here-text');
-  stillEl.style.opacity = '0';
+  const dotEl   = document.getElementById('wave-touch-dot');
+  const ringEl  = document.getElementById('wave-touch-ring');
+  const hintEl  = document.getElementById('wave-hint');
+  const svgEl   = document.getElementById('wave-svg');
+  const container = document.getElementById('wave-container');
 
-  // Amplitude envelope: rises 0→50 over first half, falls 50→0 over second half
+  stillEl.style.opacity = '0';
+  if (hintEl) hintEl.style.opacity = '0.7';
+
+  // Spring deformation offsets per control point
+  const deform = [0, 0, 0, 0];
+  const touch  = { active: false, svgX: 160, svgY: 80 };
+  let hintDismissed = false;
+
+  function toSVG(clientX, clientY) {
+    const rect = svgEl.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left) / rect.width  * 320,
+      y: (clientY - rect.top)  / rect.height * 160,
+    };
+  }
+
+  function dismissHint() {
+    if (!hintDismissed && hintEl) {
+      hintEl.style.opacity = '0';
+      hintDismissed = true;
+    }
+  }
+
+  function onDown(e) {
+    e.preventDefault();
+    touch.active = true;
+    const src = e.touches ? e.touches[0] : e;
+    const pt  = toSVG(src.clientX, src.clientY);
+    touch.svgX = pt.x; touch.svgY = pt.y;
+    dotEl.setAttribute('cx', pt.x);
+    dotEl.setAttribute('cy', pt.y);
+    dotEl.setAttribute('opacity', '0.9');
+    ringEl.setAttribute('cx', pt.x);
+    ringEl.setAttribute('cy', pt.y);
+    ringEl.setAttribute('opacity', '0.35');
+    dismissHint();
+  }
+
+  function onMove(e) {
+    if (!touch.active) return;
+    e.preventDefault();
+    const src = e.touches ? e.touches[0] : e;
+    const pt  = toSVG(src.clientX, src.clientY);
+    touch.svgX = pt.x; touch.svgY = pt.y;
+    dotEl.setAttribute('cx', pt.x);
+    dotEl.setAttribute('cy', pt.y);
+    ringEl.setAttribute('cx', pt.x);
+    ringEl.setAttribute('cy', pt.y);
+  }
+
+  function onUp(e) {
+    touch.active = false;
+    dotEl.setAttribute('opacity', '0');
+    ringEl.setAttribute('opacity', '0');
+  }
+
+  container.addEventListener('mousedown',   onDown);
+  container.addEventListener('mousemove',   onMove);
+  container.addEventListener('mouseup',     onUp);
+  container.addEventListener('mouseleave',  onUp);
+  container.addEventListener('touchstart',  onDown,  { passive: false });
+  container.addEventListener('touchmove',   onMove,  { passive: false });
+  container.addEventListener('touchend',    onUp);
+  container.addEventListener('touchcancel', onUp);
+
+  state.waveCleanup = function() {
+    container.removeEventListener('mousedown',   onDown);
+    container.removeEventListener('mousemove',   onMove);
+    container.removeEventListener('mouseup',     onUp);
+    container.removeEventListener('mouseleave',  onUp);
+    container.removeEventListener('touchstart',  onDown);
+    container.removeEventListener('touchmove',   onMove);
+    container.removeEventListener('touchend',    onUp);
+    container.removeEventListener('touchcancel', onUp);
+  };
+
   function amplitude(t) {
-    // t in [0,1]
     const peak = 55;
-    if (t < 0.5) return peak * (t / 0.5);
-    return peak * (1 - (t - 0.5) / 0.5);
+    return t < 0.5
+      ? peak * (t / 0.5)
+      : peak * (1 - (t - 0.5) / 0.5);
   }
 
   function buildPath(amp) {
-    // 4 sinusoidal bumps across 320px viewBox, centered at y=80
+    // Control points alternate above/below center; deform[] adds touch offset
+    const y0 = 80 - amp + deform[0];
+    const y1 = 80 + amp + deform[1];
+    const y2 = 80 - amp + deform[2];
+    const y3 = 80 + amp + deform[3];
     return (
-      'M0,80 ' +
-      'Q40,' + (80 - amp) + ' 80,80 ' +
-      'Q120,' + (80 + amp) + ' 160,80 ' +
-      'Q200,' + (80 - amp) + ' 240,80 ' +
-      'Q280,' + (80 + amp) + ' 320,80'
+      'M0,80 '          +
+      'Q40,'  + y0 + ' 80,80 '   +
+      'Q120,' + y1 + ' 160,80 '  +
+      'Q200,' + y2 + ' 240,80 '  +
+      'Q280,' + y3 + ' 320,80'
     );
   }
 
   function tick(now) {
     const elapsed = now - start;
-    const t = Math.min(elapsed / DURATION, 1);
-    const amp = amplitude(t);
+    const t       = Math.min(elapsed / DURATION, 1);
+    const amp     = amplitude(t);
+
+    // Spring physics: each control point springs toward touch influence or 0
+    CP_X.forEach(function(cx, i) {
+      var target = 0;
+      if (touch.active) {
+        var dist      = Math.abs(touch.svgX - cx);
+        var influence = Math.max(0, 1 - dist / INFLUENCE_R);
+        // (svgY - 80): above center → negative → pulls wave up; below → pulls down
+        target = (touch.svgY - 80) * influence * 1.5;
+      }
+      deform[i] += (target - deform[i]) * SPRING_K;
+      deform[i]  = Math.max(-MAX_DEFORM, Math.min(MAX_DEFORM, deform[i]));
+    });
+
     pathEl.setAttribute('d', buildPath(amp));
 
-    // "Still here." visible during peak (t 0.35–0.65)
+    // Stroke brightens while touching
+    pathEl.setAttribute('stroke', touch.active ? '#60DDD6' : '#2EC4B6');
+
+    // "Still here." fades in at peak
     const inPeak = t > 0.3 && t < 0.7;
     stillEl.style.opacity = inPeak ? '1' : '0';
 
@@ -873,9 +1012,9 @@ function restartWave() {
 
   state.waveRaf = requestAnimationFrame(tick);
 
-  // Auto-advance after 90s
   state.waveHandle = setTimeout(function() {
-    if (state.waveRaf) cancelAnimationFrame(state.waveRaf);
+    if (state.waveRaf)    cancelAnimationFrame(state.waveRaf);
+    if (state.waveCleanup) { state.waveCleanup(); state.waveCleanup = null; }
     completeActivity();
   }, DURATION);
 }
