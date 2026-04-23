@@ -5,7 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#0D1B2A" />
   <title>Recovery Wall</title>
-  <script src="https://developers.tiktok.com/js/minis.js"></script>
+  <!-- Stub defined first; real SDK overrides if it loads successfully -->
+  <script>
+    window.TTMinis = {
+      game: { init: function(cfg) { console.log('[TTMinis stub] init', cfg); } },
+      share: function(opts) { console.log('[TTMinis stub] share', opts); }
+    };
+  </script>
+  <script src="https://developers.tiktok.com/js/minis.js" async></script>
   <style>
     /* ── Design tokens ── */
     :root {
@@ -656,22 +663,9 @@
 
 <script>
 // ─────────────────────────────────────────────────────────────
-// TTMinis SDK stub (overridden by real SDK when available)
+// TTMinis SDK init (stub already set in <head>; real SDK may override)
 // ─────────────────────────────────────────────────────────────
-if (typeof TTMinis === 'undefined') {
-  window.TTMinis = {
-    game: {
-      init: function(cfg) {
-        console.log('[TTMinis stub] init', cfg);
-      }
-    },
-    share: function(opts) {
-      console.log('[TTMinis stub] share', opts);
-    }
-  };
-}
-
-TTMinis.game.init({ clientKey: 'YOUR_CLIENT_KEY' });
+try { TTMinis.game.init({ clientKey: 'YOUR_CLIENT_KEY' }); } catch(e) {}
 
 // ─────────────────────────────────────────────────────────────
 // State
@@ -716,16 +710,23 @@ function daysBetween(a, b) {
 }
 
 function loadState() {
-  const t = parseInt(localStorage.getItem(LS_TOKENS) || '0', 10);
-  state.tokens   = isNaN(t) ? 0 : Math.max(0, t);
-  state.lastDate = localStorage.getItem(LS_LAST_DATE) || null;
+  try {
+    const t = parseInt(localStorage.getItem(LS_TOKENS) || '0', 10);
+    state.tokens   = isNaN(t) ? 0 : Math.max(0, t);
+    state.lastDate = localStorage.getItem(LS_LAST_DATE) || null;
+  } catch(e) {
+    state.tokens   = 0;
+    state.lastDate = null;
+  }
 }
 
 function saveCompletion() {
   state.tokens += 1;
   state.lastDate = todayStr();
-  localStorage.setItem(LS_TOKENS,    String(state.tokens));
-  localStorage.setItem(LS_LAST_DATE, state.lastDate);
+  try {
+    localStorage.setItem(LS_TOKENS,    String(state.tokens));
+    localStorage.setItem(LS_LAST_DATE, state.lastDate);
+  } catch(e) {}
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1049,7 +1050,7 @@ document.getElementById('btn-share-back').addEventListener('click', function() {
 // ─────────────────────────────────────────────────────────────
 // Boot
 // ─────────────────────────────────────────────────────────────
-init();
+try { init(); } catch(e) { console.error('[RecoveryWall] init error:', e); }
 </script>
 </body>
 </html>
