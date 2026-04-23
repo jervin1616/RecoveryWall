@@ -412,6 +412,14 @@
       color: var(--white);
       margin-top: 4px;
     }
+    .share-quote {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.55;
+      margin-top: 6px;
+      padding: 0 4px;
+    }
     .share-rtt {
       font-size: 10px;
       font-weight: 700;
@@ -690,6 +698,7 @@
       <div class="share-count" id="share-count-num">1</div>
       <div class="share-label">days completed</div>
       <div class="share-tagline">Building something.</div>
+      <div class="share-quote" id="share-quote"></div>
       <div class="share-rtt">RTT</div>
     </div>
     <div class="gap-20"></div>
@@ -720,6 +729,7 @@ const state = {
   lastDate:        null,
   currentScreen:   null,
   groundingStep:   0,
+  quote:           '',
   timerHandle:     null,
   waveHandle:      null,
   waveRaf:         null,
@@ -874,8 +884,8 @@ function renderWall(highlightLast) {
 function renderCompletionScreen() {
   document.getElementById('token-number').textContent = state.tokens;
   renderWall(true);
-  const quote = COMPLETION_QUOTES[Math.floor(Math.random() * COMPLETION_QUOTES.length)];
-  document.getElementById('completion-quote').textContent = quote;
+  state.quote = COMPLETION_QUOTES[Math.floor(Math.random() * COMPLETION_QUOTES.length)];
+  document.getElementById('completion-quote').textContent = state.quote;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1092,6 +1102,7 @@ function routeToMood(mood) {
 // ─────────────────────────────────────────────────────────────
 function showShareCard() {
   document.getElementById('share-count-num').textContent = state.tokens;
+  document.getElementById('share-quote').textContent = state.quote;
   showScreen('screen-share');
 }
 
